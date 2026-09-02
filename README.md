@@ -6,7 +6,7 @@ human corpus**, annotate every feature against the same biological vocabulary, a
 model organises and *how*. It extends the single-model atlases of Ihor Kendiukhov / Biodyn-AI
 ([bio-sae](https://github.com/Biodyn-AI/bio-sae)) into one comparative frame.
 
-**▶ Live atlas:** open `index.html` (self-contained, ~16 MB) — or host it on GitHub Pages (below).
+**▶ Live atlas:** open `index.html` (self-contained, full-resolution ~61 MB — heavy but complete) — or host it on GitHub Pages (below). It embeds all data; no server or build needed to view.
 
 ---
 
@@ -117,9 +117,9 @@ Adding a model = write `pipeline/atlas_h100/adapters/<m>.py` (implement `iter_ac
 2. GitHub → **Settings → Pages → Source: Deploy from a branch → `main` / root**.
 3. Your atlas is live at `https://<user>.github.io/<repo>/`.
 
-(For the full-resolution build — every feature, no 500/layer cap, ~61 MB — run `inject_atlas.py` which
-also emits `atlas_full.html`; it's git-ignored by default because of its size. Serve it the same way if
-you want the uncapped Layer Explorer.)
+`index.html` is the full-resolution build (every feature, no per-layer cap, ~61 MB) — under GitHub's 100 MB
+file limit, so it commits and serves directly. It's heavy to load in a browser; if you want a snappier page,
+`inject_atlas.py` can emit a capped (~16–17 MB) build from the same data.
 
 ## Credit
 
