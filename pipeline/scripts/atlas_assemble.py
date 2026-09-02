@@ -1,0 +1,181 @@
+#!/usr/bin/env python
+"""Re-assemble atlas_full_notf.json for ALL models present in the component JSONs (7 or 8 with Tahoe).
+Derives coverage / universality / similarity / specific / totals / lineage / firing from the per-model
+STRING matrix, and pulls depth / tissue / cka / cka_layers / nonlinearity / module_themes / svd from their
+own files if present. Robust to missing pieces (keeps a block absent rather than crashing). Run after
+reannotate_string.py (8-model matrix) + the all-layers downstream (with Tahoe added).
+    python scripts/atlas_assemble.py
+"""
+from __future__ import annotations
+import json, os
+import numpy as np
+from collections import defaultdict, Counter
+
+C = "/Users/annaantipova/Desktop/biomech/outputs/atlas/comparative"
+PARAMS = {"AIDO": "10M", "UCE": "650M", "tGPT": "~50M", "Geneformer": "316M", "scGPT": "~50M",
+          "C2S": "2B", "MaxToki": "217M", "Tahoe": "3B", "scFoundation": "100M", "GeneCompass": "104M"}
+PARAMS_M = {"AIDO": 10, "tGPT": 50, "scGPT": 50, "MaxToki": 217, "Geneformer": 316, "UCE": 650, "C2S": 2000, "Tahoe": 3000, "scFoundation": 100, "GeneCompass": 104}
+ORDER = ["AIDO", "C2S", "Geneformer", "MaxToki", "UCE", "scGPT", "tGPT", "scFoundation", "GeneCompass", "Tahoe"]
+
+
+def load(name):
+    p = os.path.join(C, name)
+    return json.load(open(p)) if os.path.exists(p) else None
+
+
+def clean(t):
+    return (t.replace("GO_BP:", "").replace("Reactome:", "").replace("KEGG:", "").replace("STRING:", "PPI: ")
+            .replace("TRRUST:", "TF ").split(" (GO:")[0].split(" R-HSA")[0].split(" (hsa")[0]
+            .replace("Homo sapiens ", "").strip())
+
+
+def main():
+    mat = load("matrix_ts3_string.json")
+    assert mat, "need matrix_ts3_string.json (run reannotate_string.py with 8 models first)"
+    models = [m for m in ORDER if m in mat]
+    n = len(models)
+    print(f"assembling {n} models: {models}", flush=True)
+    d = {"models": models, "n_models": n}
+
+    # per-model concept sets + coverage
+    concepts = {m: set(mat[m]["term_count"]) for m in models}
+    SRC = ["GO_BP", "Reactome", "KEGG", "STRING"]
+    cov = {}
+    for m in models:
+        mm = mat[m]; tc = mm["term_count"]
+        by = {s: sum(1 for t in tc if t.startswith(s + ":")) for s in SRC}
+        cov[m] = {"axis": mm.get("axis", ""), "layer": mm["layer"], "n_feat": mm["n_feat"], "n_annot": mm["n_annot"],
+                  "annot_rate": round(100 * mm["n_annot"] / max(mm["n_feat"], 1), 1),
+                  "n_concepts": len(tc), "by_source": by}
+    d["coverage"] = cov
+
+    # universality spectrum
+    concept_models = defaultdict(set)
+    for m in models:
+        for t in concepts[m]:
+            concept_models[t].add(m)
+    uni = {str(k): 0 for k in range(1, n + 1)}
+    for t, ms in concept_models.items():
+        uni[str(len(ms))] += 1
+    d["universality"] = uni
+    core = sorted(t for t, ms in concept_models.items() if len(ms) == n)
+    d["universal_core_terms"] = [clean(t) if False else t for t in core[:120]]
+
+    # specific (exclusive concepts per model)
+    spec = {}
+    for m in models:
+        excl = [t for t in concepts[m] if len(concept_models[t]) == 1]
+        cnt = mat[m]["term_count"]
+        top = sorted(({"term": t, "count": cnt[t]} for t in excl), key=lambda x: -x["count"])[:12]
+        spec[m] = {"n_unique": len(excl), "top": top}
+    d["specific"] = spec
+
+    # similarity (Jaccard)
+    J = [[0.0] * n for _ in range(n)]
+    for i, a in enumerate(models):
+        for j, b in enumerate(models):
+            if i == j:
+                J[i][j] = 1.0
+            else:
+                inter = len(concepts[a] & concepts[b]); uni2 = len(concepts[a] | concepts[b]) or 1
+                J[i][j] = round(inter / uni2, 3)
+    d["similarity"] = {"models": models, "J": J}
+
+    allc = set().union(*concepts.values())
+    d["totals"] = {"total_features": sum(mat[m]["n_feat"] for m in models),
+                   "total_annotated": sum(mat[m]["n_annot"] for m in models),
+                   "total_concepts": len(allc), "universal_core": uni[str(n)]}
+    d["params"] = {m: PARAMS.get(m, "?") for m in models}
+
+    # firing (annotated vs unannotated firing rate at mid layer)
+    freq = load("freq_ts3.json")
+    if freq:
+        firing = []
+        for m in models:
+            if m not in freq:
+                continue
+            lays = freq[m]["layers"]; midabs = mat[m]["layer"]
+            ri = lays.index(midabs) if midabs in lays else len(lays) // 2
+            f = np.array(freq[m]["freq"][str(ri)]); ann = set(int(k) for k in mat[m]["feat_terms"])
+            ids = np.arange(len(f)); isann = np.array([i in ann for i in ids]); alive = f > 0
+            a = f[isann & alive]; u = f[(~isann) & alive]
+            if len(a) and len(u):
+                firing.append({"model": m, "annot_pct": round(100 * isann[alive].mean(), 1),
+                               "med_ann": round(float(np.median(a)), 5), "med_un": round(float(np.median(u)), 5),
+                               "mean_ann": round(float(a.mean()), 5), "mean_un": round(float(u.mean()), 5),
+                               "ratio": round(float(np.median(a) / max(np.median(u), 1e-12)), 2),
+                               "n_un": int((~isann & alive).sum()), "n_ann": int((isann & alive).sum())})
+        d["firing"] = firing
+
+    # lineage (scaling + dendrogram + signature)
+    al = load("alllayer_concepts.json")
+    scaling = []
+    for m in models:
+        s = {"model": m, "params_M": PARAMS_M.get(m, 0), "annot_rate": cov[m]["annot_rate"],
+             "n_concepts": cov[m]["n_concepts"], "n_feat": cov[m]["n_feat"]}
+        if al and m in al:
+            s["n_concepts_all"] = al[m]["all_layer_union"]
+        scaling.append(s)
+    lp = np.log10([max(PARAMS_M.get(m, 1), 1) for m in models])
+    corr = {"params_annot": round(float(np.corrcoef(lp, [cov[m]["annot_rate"] for m in models])[0, 1]), 3),
+            "params_concepts_mid": round(float(np.corrcoef(lp, [cov[m]["n_concepts"] for m in models])[0, 1]), 3)}
+    if al:
+        corr["params_concepts_all"] = round(float(np.corrcoef(lp, [al[m]["all_layer_union"] for m in models])[0, 1]), 3)
+    # dendrogram from 1-J
+    try:
+        from scipy.cluster.hierarchy import linkage, leaves_list
+        from scipy.spatial.distance import squareform
+        Dd = 1 - np.array(J); np.fill_diagonal(Dd, 0)
+        Z = linkage(squareform(Dd, checks=False), method="average")
+        order = [int(i) for i in leaves_list(Z)]
+        Zl = [[float(x) for x in row] for row in Z]
+    except Exception as e:
+        print("dendrogram skipped:", e); order = list(range(n)); Zl = []
+    sig = {}
+    for m in models:
+        tops = spec[m]["top"]
+        named = [x for x in tops if not x["term"].startswith("STRING:")]
+        pick = (named or tops or [{"term": "?", "count": 0}])[0]
+        sig[m] = {"term": clean(pick["term"]), "count": pick["count"], "n_unique": spec[m]["n_unique"]}
+    d["lineage"] = {"models": models, "order": order, "Z": Zl, "scaling": scaling, "corr": corr, "signature": sig}
+
+    # pull-through blocks from their own files (already 8-model if downstream re-ran)
+    for key, fname, xform in [
+        ("depth", "depth_alllayers.json", lambda x: x),
+        ("tissue_layers", "tissue_alllayers.json", lambda x: x),
+        ("cka", "cka_ts3.json", lambda x: {"models": x["models"], "depths": x.get("depths"), "residual": x["residual"], "sae": x["sae"]}),
+        ("cka_layers", "cka_layers.json", lambda x: x),
+        ("nonlinearity", "nonlinearity_alllayers.json", lambda x: x),
+        ("module_themes", "module_themes.json", lambda x: x),
+        ("flow", "flow_alllayers.json", lambda x: x),
+        ("celltype", "celltype_difficulty.json", lambda x: x),
+        ("findings", "findings.json", lambda x: x),
+    ]:
+        v = load(fname)
+        if v is not None:
+            d[key] = xform(v)
+        else:
+            print(f"  (missing {fname} -> {key} block skipped)")
+
+    old = load("atlas_full_notf.json") or {}
+    # svd: start from the old block (7 models), update with any per-model svd files (adds Tahoe)
+    import glob
+    svd = dict(old.get("svd", {}))
+    for m in models:
+        fs = glob.glob(f"{C}/svd/{m}_L*_svd.json") or glob.glob(f"/Users/annaantipova/Desktop/biomech/outputs/atlas/svd/{m}_L*_svd.json")
+        if fs:
+            j = json.load(open(sorted(fs)[len(fs) // 2]))
+            svd[m] = {"novel": round(100 * j.get("pct_novel", 1), 1), "svd_var": j.get("svd_var_at_k", 0), "sae_var": j.get("sae_var", 0)}
+    if svd:
+        d["svd"] = {m: svd[m] for m in models if m in svd}
+    # preserve flow if we didn't recompute it
+    if "flow" in old and "flow" not in d:
+        d["flow"] = old["flow"]
+
+    json.dump(d, open(f"{C}/atlas_full_notf.json", "w"))
+    print(f"\n==> atlas_full_notf.json ({n} models). keys: {sorted(d)}", flush=True)
+    print(f"    universality: {uni} | universal core (all {n}): {uni[str(n)]} | total concepts {len(allc)}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
