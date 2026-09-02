@@ -16,6 +16,7 @@ DATA = {
     "genes-data": f"{C}/genes_ts3.json",
     "atlas-data": f"{C}/atlas_full_notf.json",
 }
+N_MODELS = len(json.load(open(DATA["atlas-data"]))["models"])
 NEW_THEME_READ = (
     " const Z=T.Z,tm=T.models,th=T.themes,N=tm.length;"
     "const inAll=th.filter((t,i)=>Z[i].every(v=>v>0));"
@@ -59,12 +60,20 @@ def build(explorer_path, out_path, label):
         # theme-read: replace the whole physical line
         if "getElementById('theme-read').innerHTML=" in ln:
             lines[i] = NEW_THEME_READ
+    # model-count words in PROSE -> current N (only on short lines; never touch the multi-MB data blocks,
+    # where a concept like "seven-transmembrane" must not be mangled)
+    NW = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven",
+          8: "eight", 9: "nine", 10: "ten", 11: "eleven", 12: "twelve"}.get(N_MODELS, str(N_MODELS))
+    CW = [(r"\bseven\b", NW), (r"\bSeven\b", NW.capitalize()),
+          (r"\beight\b", NW), (r"\bEight\b", NW.capitalize())]
+    for i, l in enumerate(lines):
+        if len(l) < 4000:
+            for pat, rep in CW:
+                l = re.sub(pat, rep, l)
+            lines[i] = l
     html = "\n".join(lines)
     for a, b in SUBS:
         html = html.replace(a, b)
-    # prose 'seven' -> 'eight' (whole word, both cases); data blocks are already swapped, JSON has no 'seven'
-    html = re.sub(r"\bseven\b", "eight", html)
-    html = re.sub(r"\bSeven\b", "Eight", html)
     open(out_path, "w", encoding="utf-8").write(html)
     mb = os.path.getsize(out_path) / 1024 / 1024
     print(f"{label}: {out_path}  ({mb:.1f} MB)")
