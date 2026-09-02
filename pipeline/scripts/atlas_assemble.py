@@ -279,6 +279,13 @@ def main():
     tv = [(p["tissue_deep"], p["core_share"]) for p in pts if p["tissue_deep"] is not None]
     tcorr = round(float(np.corrcoef([x[0] for x in tv], [x[1] for x in tv])[0, 1]), 3) if len(tv) > 2 else None
     extra["tissue_tradeoff"] = {"points": pts, "corr": tcorr}
+    # (5) adjacent-layer circuits (weight-based) + (6) hard-cell agreement — cluster outputs, pass through
+    circ = load("circuits_adjacent.json")
+    if circ:
+        extra["circuits"] = {m: {"transitions": circ[m]["transitions"]} for m in models if m in circ}
+    hc = load("hardcell_agreement.json")
+    if hc:
+        extra["hardcells"] = hc
     d["extra"] = extra
 
     # pull-through blocks from their own files (already 8-model if downstream re-ran)
