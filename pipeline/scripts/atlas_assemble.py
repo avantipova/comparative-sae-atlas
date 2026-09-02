@@ -222,6 +222,65 @@ def main():
     cands.sort(key=lambda c: (-c["n_models"], -len(c["co"])))
     d["novel_biology"] = {"thresh": THRESH, "n_models": n, "candidates": cands[:14]}
 
+    # ---- extra findings (Analysis 16): feature economy + frontier ----
+    extra = {}
+    # (1) economy: resolution (features/concept) + polysemanticity (terms/feature) + geometry vs biology
+    res = {m: round(float(np.mean(list(mat[m]["term_count"].values()))), 2) for m in models}
+    poly = {}
+    for m in models:
+        vals = [len(v) for v in mat[m]["feat_terms"].values() if v]
+        poly[m] = round(float(np.mean(vals)), 2) if vals else 0.0
+    lp = np.log10([max(PARAMS_M.get(m, 1), 1) for m in models])
+    geom_bio = None
+    ckaf = load("cka_ts3.json")
+    ck = ckaf.get("residual", {}) if ckaf else {}
+    if ck:
+        key = "2" if "2" in ck else sorted(ck)[len(ck) // 2]
+        cm2 = ckaf["models"]; Jm = d["similarity"]["models"]; Jmat = d["similarity"]["J"]
+        ci = {x: i for i, x in enumerate(cm2)}; ji = {x: i for i, x in enumerate(Jm)}
+        aa, bb = [], []
+        com = [m for m in cm2 if m in ji]
+        for i in range(len(com)):
+            for j in range(i + 1, len(com)):
+                aa.append(ck[key][ci[com[i]]][ci[com[j]]]); bb.append(Jmat[ji[com[i]]][ji[com[j]]])
+        if len(aa) > 2:
+            geom_bio = round(float(np.corrcoef(aa, bb)[0, 1]), 3)
+    extra["economy"] = {"models": models, "resolution": res, "polysemanticity": poly, "geom_bio_corr": geom_bio,
+                        "corr_res_size": round(float(np.corrcoef(lp, [res[m] for m in models])[0, 1]), 3),
+                        "corr_poly_size": round(float(np.corrcoef(lp, [poly[m] for m in models])[0, 1]), 3)}
+    # (2) rare-concept frontier: named pathways encoded by only 1-2 of N models
+    rare = [(t, len(ms), sorted(ms)) for t, ms in concept_models.items()
+            if len(ms) <= 2 and not t.startswith("STRING:")]
+    rare.sort(key=lambda x: (-x[1], x[0]))
+    extra["rare"] = {"n_rare_named": len(rare),
+                     "examples": [{"term": clean(t), "k": k, "models": ms} for t, k, ms in rare[:24]]}
+    # (3) gene universality: genes represented (top-gene of some feature) across models
+    gts = load("genes_ts3.json")
+    if gts:
+        hist = Counter(); allg = []
+        for g, rows in gts["index"].items():
+            k = len({r[0] for r in rows})
+            hist[k] += 1
+            if k == len(gts["models"]):
+                allg.append(g)
+        extra["gene_univ"] = {"n_models": len(gts["models"]), "n_genes": gts["n_genes"],
+                              "hist": {str(k): hist[k] for k in sorted(hist)},
+                              "n_all": len(allg), "universal_genes": sorted(allg)[:40]}
+    # (4) tissue-binding vs universal coverage tradeoff
+    core = set(t for t, ms in concept_models.items() if len(ms) == n)
+    tl2 = load("tissue_alllayers.json")
+    pts = []
+    for m in models:
+        td = None
+        if tl2 and m in tl2.get("models", {}) and tl2["models"][m]:
+            td = round(tl2["models"][m][-1].get("frac_specific", 0), 3)
+        cshare = round(100 * len(concepts[m] & core) / max(len(concepts[m]), 1), 1)
+        pts.append({"model": m, "tissue_deep": td, "core_share": cshare})
+    tv = [(p["tissue_deep"], p["core_share"]) for p in pts if p["tissue_deep"] is not None]
+    tcorr = round(float(np.corrcoef([x[0] for x in tv], [x[1] for x in tv])[0, 1]), 3) if len(tv) > 2 else None
+    extra["tissue_tradeoff"] = {"points": pts, "corr": tcorr}
+    d["extra"] = extra
+
     # pull-through blocks from their own files (already 8-model if downstream re-ran)
     for key, fname, xform in [
         ("depth", "depth_alllayers.json", lambda x: x),
