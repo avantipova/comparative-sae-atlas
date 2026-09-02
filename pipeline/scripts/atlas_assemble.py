@@ -29,6 +29,34 @@ def clean(t):
             .replace("Homo sapiens ", "").strip())
 
 
+import re
+TS_OUT = "/Users/annaantipova/Desktop/biomech/outputs/atlas/ts3_out"
+# inductive-axis taxonomy: tokenization (must match the atlas TCOL keys) / objective / prior
+TAX = {
+    "AIDO": ("expression", "MLM", "none"), "scGPT": ("expression", "MLM", "none"),
+    "tGPT": ("rank", "autoregressive", "none"), "scFoundation": ("expression", "MAE", "read-depth"),
+    "GeneCompass": ("rank", "MLM", "knowledge/GRN"), "MaxToki": ("expression", "autoregressive", "none"),
+    "Geneformer": ("rank", "MLM", "none"), "UCE": ("protein-token", "masked", "ESM"),
+    "C2S": ("cell-sentence", "autoregressive", "text"), "Tahoe": ("expression", "MLM", "none"),
+}
+_CATRULES = [("translation", "translat|ribosom|peptide chain|aminoacyl|rrna|elongation"),
+             ("DNA/cell-cycle", "cell cycle|mitotic|dna replicat|dna repair|chromosom|spindle|dna metabolic|telomere|nucleosome"),
+             ("RNA-processing", "splic|mrna|rna processing|snrna|transcription|polymerase|nonsense-mediated"),
+             ("mito/OXPHOS", "respiratory electron|atp synth|oxidative phosph|mitochond|electron transport|tca"),
+             ("immune", "immune|neutrophil|interferon|cytokine|mhc|antigen|complement|inflamm|lymphocyte|interleukin|degranulation|leukocyte"),
+             ("membrane/transport", "transport|endocytos|golgi|vesicle|slc|transmembrane|secretion|traffick|lysosom|endosom"),
+             ("signaling", "signal|mapk|kinase|receptor|wnt|notch|gpcr|phosphoryl|pathway|rho gtpase"),
+             ("metabolism", "metabol|biosynth|catabol|glycol|lipid|fatty acid|cholesterol|amino acid|nucleotide|heme")]
+
+
+def catof(term):
+    s = term.replace("STRING:", "PPI ").replace("GO_BP:", "").replace("Reactome:", "").replace("KEGG:", "").lower()
+    for nm, pat in _CATRULES:
+        if re.search(pat, s):
+            return nm
+    return "other"
+
+
 def main():
     mat = load("matrix_ts3_string.json")
     assert mat, "need matrix_ts3_string.json (run reannotate_string.py with 8 models first)"
@@ -138,6 +166,61 @@ def main():
         pick = (named or tops or [{"term": "?", "count": 0}])[0]
         sig[m] = {"term": clean(pick["term"]), "count": pick["count"], "n_unique": spec[m]["n_unique"]}
     d["lineage"] = {"models": models, "order": order, "Z": Zl, "scaling": scaling, "corr": corr, "signature": sig}
+
+    # inductive axis -> findings (Analysis 13): taxonomy + per-model metrics + category universality
+    import glob as _glob
+    tl = load("tissue_alllayers.json"); ckal = load("cka_layers.json")
+    axmet = {}
+    for m in models:
+        tdeep = None
+        if tl and m in tl.get("models", {}) and tl["models"][m]:
+            tdeep = round(tl["models"][m][-1].get("frac_specific", 0), 3)
+        drift = None
+        if ckal and m in ckal and ckal[m].get("cka"):
+            drift = round(ckal[m]["cka"][0][-1], 3)
+        axmet[m] = {"annot": cov[m]["annot_rate"], "tissue_deep": tdeep,
+                    "cka_drift": drift, "concepts": cov[m]["n_concepts"]}
+    progs = defaultdict(list)
+    for t, ms in concept_models.items():
+        progs[catof(t)].append(len(ms))
+    programs = []
+    for cat_, ks in progs.items():
+        if cat_ in ("other", "PPI-hub"):
+            continue
+        arr = np.array(ks)
+        programs.append({"prog": cat_, "n": len(ks), "mean_k": round(float(arr.mean()), 2),
+                         "pct_univ": round(100 * float((arr == n).mean()), 1),
+                         "pct_excl": round(100 * float((arr == 1).mean()), 1)})
+    programs.sort(key=lambda x: -x["mean_k"])
+    d["axes"] = {"models": models,
+                 "tax": {m: {"tok": TAX[m][0], "obj": TAX[m][1], "prior": TAX[m][2]} for m in models if m in TAX},
+                 "metrics": axmet, "cat_universality": {"n_models": n, "programs": programs}}
+
+    # new biology (Analysis 14): genes that lead UNannotated features across many models
+    THRESH = max(4, n // 2)
+    gene_models = defaultdict(set); gene_co = defaultdict(Counter)
+    for m in models:
+        mid = mat[m]["layer"]; ann = set(str(k) for k in mat[m]["feat_terms"])
+        cat = None
+        for cp in _glob.glob(f"{TS_OUT}/{m}/feature_catalog_L*.json"):
+            j = json.load(open(cp))
+            if j.get("layer") == mid:
+                cat = j; break
+        if not cat:
+            continue
+        for fid, f in cat["features"].items():
+            if str(fid) in ann:
+                continue
+            tg = [str(x).upper() for x in f.get("top_genes", [])[:6] if not str(x).upper().startswith("ENSG")]
+            if not tg:
+                continue
+            gene_models[tg[0]].add(m)
+            for g in tg[1:5]:
+                gene_co[tg[0]][g] += 1
+    cands = [{"gene": g, "n_models": len(ms), "co": [x for x, _ in gene_co[g].most_common(5)]}
+             for g, ms in gene_models.items() if len(ms) >= THRESH]
+    cands.sort(key=lambda c: (-c["n_models"], -len(c["co"])))
+    d["novel_biology"] = {"thresh": THRESH, "n_models": n, "candidates": cands[:14]}
 
     # pull-through blocks from their own files (already 8-model if downstream re-ran)
     for key, fname, xform in [
