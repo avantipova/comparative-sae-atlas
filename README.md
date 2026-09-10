@@ -104,7 +104,9 @@ overlapping databases, so random genes annotate at nearly the real rate.
   trained adaptive allocation, not from having more directions.
 - **Cell identity is linearly decodable at every depth**, with no gain from a non-linear probe.
 - **The features predict, not just describe — in some models.** Gene pairs that repeatedly co-fire in the same SAE
-  features recover held-out **TRRUST** transcription-factor→target edges, a database no step of the pipeline uses.
+  features recover held-out **TRRUST** transcription-factor→target edges. The co-firing statistic uses no annotation
+  at all, and the calibrated annotator uses curated pathway sets only, so TRRUST is held out from both. (It does appear
+  in the *permissive* annotator, which is retracted as illustrative and plays no part here.)
   Against a configuration-model null that preserves every gene's co-firing degree exactly (so abundance and study bias
   cannot produce it), **5 of 10 models pass** at p ≤ 0.005 over 200 rewirings: Tahoe-x1 13.3× (59 edges recovered),
   scGPT 11.9× (10), UCE 10.5× (43), C2S-Scale 4.1× (83), Geneformer-V2 3.9× (12). MaxToki reaches 3.5× but p = 0.11;
