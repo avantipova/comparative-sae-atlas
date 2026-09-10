@@ -69,6 +69,17 @@ features are read — the atlas stays a human atlas.
 
 Live numbers are in the atlas (`Universality`, `Scale`, `SVD` sections).
 
+**Tested and rejected.** An earlier version of the atlas carried a "new biology" panel: genes that top an
+*unannotated* SAE feature in ≥5 of 10 models, offered as a shortlist of under-annotated biology. It does not
+survive a null and has been removed. `pipeline/scripts/novel_null.py` compares the shortlist against an
+equally-sized random subset of features (real 50 vs null 65.5 ± 6.4, z = −2.4); `pipeline/scripts/novel_calibrated.py`
+redoes the selection with the calibrated annotator and a degree-matched null that permutes the
+annotated/unannotated label within each model, holding every gene's degree exactly fixed (real 207 vs null
+248.8 ± 6.2, z = −6.78; **0 of 207 candidates survive at BH q ≤ 0.05**, 2,000 permutations). Both directions show a
+*deficit*, not an excess: cross-model agreement concentrates on genes the databases already cover well —
+annotation coverage rises monotonically with the number of models agreeing on a gene (59% → 87% of genes carry
+≥1 curated term; median 3 → 11 terms). Consensus tracks database coverage; it does not fill its gaps.
+
 ## Repository layout
 
 ```
